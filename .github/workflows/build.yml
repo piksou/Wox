@@ -3,7 +3,8 @@ name: Build
 on:
   push:
     branches:
-      - master
+      - my-feature
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -17,11 +18,11 @@ jobs:
     uses: ./.github/workflows/build-core.yml
     with:
       run_tests: true
-      build_macos_arm64: ${{ contains(github.event.head_commit.message, '#build_all') || contains(github.event.head_commit.message, '#build_macos_arm64') }}
-      build_macos_amd64: ${{ contains(github.event.head_commit.message, '#build_all') || contains(github.event.head_commit.message, '#build_macos_amd64') }}
-      build_windows_amd64: ${{ contains(github.event.head_commit.message, '#build_all') || contains(github.event.head_commit.message, '#build_windows_amd64') }}
-      build_linux_amd64: ${{ contains(github.event.head_commit.message, '#build_all') || contains(github.event.head_commit.message, '#build_linux_amd64') }}
-      require_macos_notarize: true
-      require_windows_signpath: true
+      build_macos_arm64: false
+      build_macos_amd64: false
+      build_windows_amd64: true
+      build_linux_amd64: false
+      require_macos_notarize: false
+      require_windows_signpath: false
       artifact_retention_days: 10
     secrets: inherit
