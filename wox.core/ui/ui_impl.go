@@ -65,6 +65,16 @@ func (u *uiImpl) OpenWoxInstance(ctx context.Context, request common.OpenWoxInst
 	})
 }
 
+// CloseWoxInstance closes a named secondary launcher instance such as the
+// Space Quick Look preview.
+func (u *uiImpl) CloseWoxInstance(ctx context.Context, instanceName string) error {
+	view, err := u.getView(ctx)
+	if err != nil {
+		return err
+	}
+	return view.CloseInstance(ctx, instanceName)
+}
+
 func (u *uiImpl) RecordHotkey(ctx context.Context, hotkey string, kind string) {
 	logger.Info(ctx, fmt.Sprintf("send RecordHotkey to UI: hotkey=%s kind=%s", hotkey, kind))
 	u.applyView(ctx, "record hotkey", func(view contract.View) error { return view.RecordHotkey(ctx, hotkey, kind) })
@@ -506,11 +516,12 @@ func getShowOptions(ctx context.Context, showContext common.ShowContext) contrac
 	return contract.ShowOptions{
 		SelectAll: showContext.SelectAll, HideQueryBox: showContext.HideQueryBox, HideToolbar: hideToolbar, ShowPreviewTitleBar: showContext.ShowPreviewTitleBar,
 		QueryBoxAtBottom: showContext.QueryBoxAtBottom, HideOnBlur: showContext.HideOnBlur,
-		RestoreWindow:    showContext.RestoreWindow,
-		Position:         contract.Position{Type: string(position.Type), X: position.X, Y: position.Y},
-		RememberPosition: rememberPosition,
-		PositionHeight:   showContext.WindowPositionHeight,
-		WindowWidth:      windowWidth, MaxResultCount: maxResultCount, QueryHistories: queryHistories, LaunchMode: woxSetting.LaunchMode.Get(),
+		ShowWithoutActivation: showContext.ShowWithoutActivation,
+		RestoreWindow:         showContext.RestoreWindow,
+		Position:              contract.Position{Type: string(position.Type), X: position.X, Y: position.Y},
+		RememberPosition:      rememberPosition,
+		PositionHeight:        showContext.WindowPositionHeight,
+		WindowWidth:           windowWidth, MaxResultCount: maxResultCount, QueryHistories: queryHistories, LaunchMode: woxSetting.LaunchMode.Get(),
 		StartPage: woxSetting.StartPage.Get(), ShowSource: string(showSource),
 	}
 }

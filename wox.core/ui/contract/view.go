@@ -37,7 +37,12 @@ type ShowOptions struct {
 	ShowPreviewTitleBar bool
 	QueryBoxAtBottom    bool
 	HideOnBlur          bool
-	ShowSource          string
+	// ShowWithoutActivation shows the window without stealing keyboard focus
+	// from the current foreground app (Space Quick Look style previews).
+	// Window focus policy is fixed at creation, so this only takes effect when
+	// the instance window is created.
+	ShowWithoutActivation bool
+	ShowSource            string
 	// RestoreWindow identifies the source window that should regain focus after
 	// this transient launcher instance is hidden.
 	RestoreWindow *common.ActiveWindowSnapshot
@@ -58,6 +63,9 @@ type View interface {
 	Hide(ctx context.Context) error
 	Toggle(ctx context.Context, options ShowOptions) error
 	OpenInstance(ctx context.Context, options OpenInstanceOptions) error
+	// CloseInstance closes a live named secondary launcher instance. Closing an
+	// instance that is not open returns an error.
+	CloseInstance(ctx context.Context, instanceName string) error
 	ChangeQuery(ctx context.Context, query common.PlainQuery) error
 	RefreshQuery(ctx context.Context, options common.RefreshQueryOptions) error
 	RefreshGlance(ctx context.Context, pluginID string, ids []string) error

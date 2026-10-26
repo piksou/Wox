@@ -93,6 +93,10 @@ type UI interface {
 	ShowApp(ctx context.Context, showContext ShowContext)
 	ToggleApp(ctx context.Context, showContext ShowContext)
 	OpenWoxInstance(ctx context.Context, request OpenWoxInstanceRequest)
+	// CloseWoxInstance closes a live named secondary launcher instance opened
+	// through OpenWoxInstance, such as the Space Quick Look preview. Closing an
+	// instance that is not open returns an error.
+	CloseWoxInstance(ctx context.Context, instanceName string) error
 	RecordHotkey(ctx context.Context, hotkey string, kind string)
 	OpenSettingWindow(ctx context.Context, windowContext SettingWindowContext)
 	OpenOnboardingWindow(ctx context.Context)
@@ -192,9 +196,14 @@ type ShowContext struct {
 	// computed. Bottom-anchored launchers (explorer/tray) need it so later shows
 	// can keep the same bottom edge while result height changes.
 	WindowPositionHeight int
-	TrayAnchor           *TrayAnchor
-	WindowWidth          int
-	MaxResultCount       int
+	// ShowWithoutActivation shows the window without stealing keyboard focus
+	// from the current foreground app. Hover-style surfaces such as Space Quick
+	// Look rely on it so the source app keeps receiving keystrokes; clicking the
+	// window still activates it normally. Currently only honored on Windows.
+	ShowWithoutActivation bool
+	TrayAnchor            *TrayAnchor
+	WindowWidth           int
+	MaxResultCount        int
 }
 
 type WoxInstanceRole string

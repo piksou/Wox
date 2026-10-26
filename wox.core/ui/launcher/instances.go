@@ -3,6 +3,7 @@ package launcher
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"sync"
 	"time"
@@ -68,6 +69,9 @@ func (r *appInstanceRegistry) open(ctx context.Context, options contract.OpenIns
 	if options.Show.WindowWidth > 0 {
 		newWindow.show.WindowWidth = options.Show.WindowWidth
 	}
+	// Window focus policy is fixed at native-window creation, so seed the
+	// no-activation request before start() opens the window.
+	newWindow.noActivateOnShow = options.Show.ShowWithoutActivation
 	var startErr error
 	if err := newWindow.runOnUI("start secondary launcher", func() {
 		startErr = newWindow.start()
@@ -160,6 +164,34 @@ func (a *App) OpenInstance(ctx context.Context, options contract.OpenInstanceOpt
 		return errors.New("launcher instance registry is unavailable")
 	}
 	return a.instances.open(ctx, options)
+}
+
+// CloseInstance implements named secondary launcher teardown.
+func (a *App) CloseInstance(_ context.Context, instanceName string) error {
+	if a.instances == nil {
+		return errors.New("launcher instance registry is unavailable")
+	}
+	return a.instances.closeNamed(instanceName)
+}
+
+// closeNamed closes one live named secondary. The close path destroys the
+// secondary exactly like its own dismiss: hide destroys the session, releases
+// core caches, and removes the name mapping.
+func (r *appInstanceRegistry) closeNamed(instanceName string) error {
+	if r == nil || instanceName == "" {
+		return errors.New("launcher instance name is required")
+	}
+	r.mu.Lock()
+	sessionID := r.sessionByName[instanceName]
+	var app *App
+	if sessionID != "" {
+		app = r.bySessionID[sessionID]
+	}
+	r.mu.Unlock()
+	if app == nil || !app.isLive() {
+		return fmt.Errorf("launcher instance %q is not open", instanceName)
+	}
+	return app.Close()
 }
 
 // destroySecondary releases session subscriptions, core caches, and transport ownership exactly once.

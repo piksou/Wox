@@ -684,6 +684,8 @@ func (pluginHealthUI) ToggleApp(context.Context, common.ShowContext) {}
 
 func (pluginHealthUI) OpenWoxInstance(context.Context, common.OpenWoxInstanceRequest) {}
 
+func (pluginHealthUI) CloseWoxInstance(context.Context, string) error { return nil }
+
 func (pluginHealthUI) RecordHotkey(context.Context, string, string) {}
 
 func (pluginHealthUI) OpenSettingWindow(context.Context, common.SettingWindowContext) {}

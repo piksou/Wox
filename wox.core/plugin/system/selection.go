@@ -36,6 +36,13 @@ const (
 	// Space Quick Look preview. It stays distinct from the selection hotkey
 	// session so the two never replace each other's window.
 	quickLookInstanceName = "selection-quicklook"
+	// spaceQuickLookHoldDelay is the minimum Space hold before releasing closes
+	// the preview (peek). It matches util/hotkey's holdModifierPressDelay so
+	// hold-to-peek and hold-modifier hotkeys feel consistent.
+	spaceQuickLookHoldDelay = 200 * time.Millisecond
+	// quickLookOpsCapacity bounds the serialized open/close queue. Each Space
+	// decision enqueues at most one operation, so human input never fills it.
+	quickLookOpsCapacity = 16
 )
 
 func init() {
@@ -49,15 +56,38 @@ type SelectionPlugin struct {
 }
 
 // selectionSpaceQuickLookState owns the platform monitor subscriptions and the
-// small key-state machine needed to avoid repeated or accidental Space previews.
+// key-state machine that drives macOS-like Space Quick Look behavior:
+// short-press toggles the preview, holding Space for at least
+// spaceQuickLookHoldDelay peeks (release closes).
 type selectionSpaceQuickLookState struct {
-	plugin        *SelectionPlugin
-	explorerSub   quickjump.ExplorerRawKeySubscription
-	dialogSub     quickjump.ExplorerRawKeySubscription
-	mu            sync.Mutex
-	spaceDown     bool
-	spaceConsumed bool
-	invalidUntil  time.Time
+	explorerSub quickjump.ExplorerRawKeySubscription
+	dialogSub   quickjump.ExplorerRawKeySubscription
+	// ops serializes open/close dispatches in keyboard decision order so a
+	// later close can never overtake an earlier in-flight open of the same
+	// named window (opens read the selection via the clipboard and are slow).
+	ops chan func()
+	now func() time.Time
+	// openInstance dispatches an open and reports whether a window was actually
+	// requested; closeInstance closes the named preview instance. Injectable
+	// for tests.
+	openInstance  func() bool
+	closeInstance func()
+	closed        bool
+
+	mu             sync.Mutex
+	spaceDown      bool
+	spaceConsumed  bool
+	invalidUntil   time.Time
+	spacePressedAt time.Time
+	// quickLookOpen is the desired state of the preview window: an open was
+	// requested and no close decision has followed. It is set at decision time,
+	// not completion time, so keyup can judge hold duration even while the
+	// window is still opening.
+	quickLookOpen bool
+	// openInFlight marks an open that has been enqueued but not finished yet;
+	// closeAfterOpen defers a close decision until that open completes.
+	openInFlight   bool
+	closeAfterOpen bool
 }
 
 func (i *SelectionPlugin) GetMetadata() plugin.Metadata {
@@ -146,7 +176,16 @@ func (i *SelectionPlugin) updateSpaceQuickLookListener(ctx context.Context, enab
 		return
 	}
 
-	state := &selectionSpaceQuickLookState{plugin: i}
+	state := &selectionSpaceQuickLookState{
+		ops: make(chan func(), quickLookOpsCapacity),
+		now: time.Now,
+		openInstance: func() bool {
+			return i.triggerSpaceQuickLook()
+		},
+		closeInstance: func() {
+			i.closeSpaceQuickLook()
+		},
+	}
 	explorerSub, explorerErr := quickjump.AddExplorerRawKeyListener(state.handleRawKey)
 	if explorerErr != nil {
 		i.quickLookMu.Unlock()
@@ -168,6 +207,12 @@ func (i *SelectionPlugin) updateSpaceQuickLookListener(ctx context.Context, enab
 	state.dialogSub = dialogSub
 	i.quickLookState = state
 	i.quickLookMu.Unlock()
+
+	util.Go(context.Background(), "selection space quick look ops", func() {
+		for op := range state.ops {
+			op()
+		}
+	})
 }
 
 // stopSpaceQuickLookListener removes any active Space Quick Look monitor
@@ -190,23 +235,60 @@ func (s *selectionSpaceQuickLookState) close() {
 	if s.dialogSub != nil {
 		_ = s.dialogSub.Close()
 	}
+
+	s.mu.Lock()
+	s.closed = true
+	closeWanted := s.quickLookOpen
+	s.quickLookOpen = false
+	s.closeAfterOpen = false
+	s.mu.Unlock()
+	if closeWanted && s.closeInstance != nil {
+		// After closed is set only this teardown path may enqueue, so the
+		// channel close below is safe and the worker drains this final close.
+		select {
+		case s.ops <- s.closeInstance:
+		default:
+		}
+	}
+	close(s.ops)
 }
 
-// handleRawKey applies QuickLook-style Space filtering before triggering the
-// existing Selection preview command.
+// enqueue runs op on the serialized quick look worker unless the state is
+// already torn down. The send is non-blocking: ops also take the state mutex,
+// so a full queue must drop instead of deadlocking against the worker; the
+// desired-state tracking keeps the next Space press self-healing.
+func (s *selectionSpaceQuickLookState) enqueue(op func()) {
+	if op == nil {
+		return
+	}
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return
+	}
+	select {
+	case s.ops <- op:
+	default:
+	}
+	s.mu.Unlock()
+}
+
+// handleRawKey applies QuickLook-style Space filtering: short press toggles the
+// preview, long press peeks (release closes), and Escape closes an open preview.
 func (s *selectionSpaceQuickLookState) handleRawKey(event keyboard.RawKeyEvent) bool {
 	if event.Type == keyboard.EventTypeKeyUp {
 		if event.Key == keyboard.KeySpace {
-			s.mu.Lock()
-			s.spaceDown = false
-			s.spaceConsumed = false
-			s.mu.Unlock()
+			s.releaseSpace()
 		}
 		return false
 	}
 
 	if event.Type != keyboard.EventTypeKeyDown {
 		return false
+	}
+
+	if event.Key == keyboard.KeyEscape {
+		return s.closeIfOpen()
 	}
 
 	if event.Key != keyboard.KeySpace {
@@ -216,6 +298,7 @@ func (s *selectionSpaceQuickLookState) handleRawKey(event keyboard.RawKeyEvent) 
 
 	s.mu.Lock()
 	if s.spaceDown {
+		// Auto-repeat: keep consuming if the original press was consumed.
 		consume := s.spaceConsumed
 		s.mu.Unlock()
 		return consume
@@ -227,18 +310,101 @@ func (s *selectionSpaceQuickLookState) handleRawKey(event keyboard.RawKeyEvent) 
 		s.mu.Unlock()
 		return false
 	}
-	if time.Now().Before(s.invalidUntil) {
+	now := s.now()
+	if now.Before(s.invalidUntil) {
 		s.spaceConsumed = false
 		s.mu.Unlock()
 		return false
 	}
 	s.spaceConsumed = true
+	s.spacePressedAt = now
+	shouldOpen := !s.quickLookOpen
+	s.quickLookOpen = shouldOpen
+	var openDispatch, closeDispatch bool
+	if shouldOpen {
+		s.openInFlight = true
+		s.closeAfterOpen = false
+		openDispatch = true
+	} else if s.openInFlight {
+		// A previous open is still running; its completion performs the close.
+		s.closeAfterOpen = true
+	} else {
+		closeDispatch = true
+	}
 	s.mu.Unlock()
 
-	util.Go(context.Background(), "selection space quick look", func() {
-		s.plugin.triggerSpaceQuickLook()
-	})
+	if openDispatch {
+		s.enqueueOpen()
+	} else if closeDispatch {
+		s.enqueue(s.closeInstance)
+	}
 	return true
+}
+
+// releaseSpace ends one Space press. Held presses close the preview (peek);
+// short presses keep it open. Close decisions taken while the open is still in
+// flight are deferred to the open completion.
+func (s *selectionSpaceQuickLookState) releaseSpace() {
+	s.mu.Lock()
+	pressedAt := s.spacePressedAt
+	s.spaceDown = false
+	s.spaceConsumed = false
+	s.spacePressedAt = time.Time{}
+	dispatchClose := false
+	if !pressedAt.IsZero() && s.quickLookOpen && s.now().Sub(pressedAt) >= spaceQuickLookHoldDelay {
+		s.quickLookOpen = false
+		if s.openInFlight {
+			s.closeAfterOpen = true
+		} else {
+			dispatchClose = true
+		}
+	}
+	s.mu.Unlock()
+	if dispatchClose {
+		s.enqueue(s.closeInstance)
+	}
+}
+
+// closeIfOpen closes an open preview on Escape and reports whether the key was
+// consumed, so Escape never reaches the underlying Explorer or dialog twice.
+func (s *selectionSpaceQuickLookState) closeIfOpen() bool {
+	s.mu.Lock()
+	if !s.quickLookOpen {
+		s.mu.Unlock()
+		return false
+	}
+	s.quickLookOpen = false
+	dispatchClose := false
+	if s.openInFlight {
+		s.closeAfterOpen = true
+	} else {
+		dispatchClose = true
+	}
+	s.mu.Unlock()
+	if dispatchClose {
+		s.enqueue(s.closeInstance)
+	}
+	return true
+}
+
+// enqueueOpen runs one open and reconciles the deferred close decision with
+// the open result. A failed open (no valid selection) leaves no window behind,
+// so the desired state falls back to closed.
+func (s *selectionSpaceQuickLookState) enqueueOpen() {
+	s.enqueue(func() {
+		dispatched := s.openInstance()
+		s.mu.Lock()
+		s.openInFlight = false
+		if !dispatched {
+			s.quickLookOpen = false
+		}
+		closeAfterOpen := s.closeAfterOpen && dispatched
+		s.closeAfterOpen = false
+		s.mu.Unlock()
+		if closeAfterOpen {
+			s.closeInstance()
+		}
+	})
 }
 
 // recordInvalidKeyIfNeeded suppresses Space briefly after normal typing or
@@ -249,7 +415,7 @@ func (s *selectionSpaceQuickLookState) recordInvalidKeyIfNeeded(event keyboard.R
 	}
 
 	s.mu.Lock()
-	s.invalidUntil = time.Now().Add(time.Second)
+	s.invalidUntil = s.now().Add(time.Second)
 	s.mu.Unlock()
 }
 
@@ -276,20 +442,22 @@ func isSpaceQuickLookModifierKey(key keyboard.Key) bool {
 // single selected file. It runs in a named secondary launcher session so the
 // preview never overwrites the primary launcher's query state. Closing destroys
 // that secondary; the next quick look opens a fresh window for the new selection.
-func (i *SelectionPlugin) triggerSpaceQuickLook() {
+// It reports whether an open was actually dispatched; validation failures mean
+// no window appears.
+func (i *SelectionPlugin) triggerSpaceQuickLook() bool {
 	ctx := util.NewTraceContext()
 	ctx = util.WithCoreSessionContext(ctx)
 	ctx = util.WithShowSourceContext(ctx, string(common.ShowSourceSelection))
 
 	selected, err := selection.GetSelected(ctx)
 	if err != nil {
-		return
+		return false
 	}
 	if selected.Type != selection.SelectionTypeFile || len(selected.FilePaths) != 1 {
-		return
+		return false
 	}
 	if !util.IsFileExists(selected.FilePaths[0]) {
-		return
+		return false
 	}
 
 	plugin.GetPluginManager().GetUI().OpenWoxInstance(ctx, common.OpenWoxInstanceRequest{
@@ -311,10 +479,49 @@ func (i *SelectionPlugin) triggerSpaceQuickLook() {
 			HideToolbar:         true,
 			ShowPreviewTitleBar: true,
 			ShowSource:          common.ShowSourceSelection,
-			WindowWidth:         1000,
-			MaxResultCount:      12,
+			// The preview must not steal focus from Explorer: the raw-key pipe
+			// keeps feeding Space keyup decisions only while Explorer stays
+			// foreground, and long-press peek depends on it.
+			ShowWithoutActivation: true,
+			WindowPosition:        quickLookWindowPosition(quickLookWindowWidth, quickLookEstimatedWindowHeight),
+			WindowWidth:           quickLookWindowWidth,
+			MaxResultCount:        12,
 		},
 	})
+	return true
+}
+
+// closeSpaceQuickLook closes the named preview instance. Closing an instance
+// that is already gone is expected after rapid toggles and is only logged.
+func (i *SelectionPlugin) closeSpaceQuickLook() {
+	ctx := util.NewTraceContext()
+	ctx = util.WithCoreSessionContext(ctx)
+	if err := plugin.GetPluginManager().GetUI().CloseWoxInstance(ctx, quickLookInstanceName); err != nil {
+		i.api.Log(ctx, plugin.LogLevelDebug, "Space Quick Look close: "+err.Error())
+	}
+}
+
+const (
+	quickLookWindowWidth           = 1000
+	quickLookEstimatedWindowHeight = 600
+)
+
+// quickLookWindowPosition centers the preview over the active Explorer or
+// open/save dialog window, following the same physical-origin convention as
+// the quickjump Explorer overlays. The preview height is dynamic, so a rough
+// estimate keeps the panel visually centered without waiting for layout.
+func quickLookWindowPosition(windowWidth, estimatedHeight int) *common.WindowPosition {
+	x, y, w, h, ok := quickjump.GetActiveExplorerRect()
+	if !ok {
+		x, y, w, h, ok = quickjump.GetActiveDialogRect()
+	}
+	if !ok || w <= 0 || h <= 0 {
+		return nil
+	}
+	return &common.WindowPosition{
+		X: x + max(0, w-windowWidth)/2,
+		Y: y + max(0, h-estimatedHeight)/2,
+	}
 }
 
 func (i *SelectionPlugin) Query(ctx context.Context, query plugin.Query) plugin.QueryResponse {

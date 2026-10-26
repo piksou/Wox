@@ -471,6 +471,10 @@ type App struct {
 
 	visible bool
 	show    showAppParams
+	// noActivateOnShow bakes the ShowWithoutActivation request into the native
+	// window at creation time so preview panels such as Space Quick Look appear
+	// without stealing focus from the foreground app.
+	noActivateOnShow bool
 	// permissionFlow remembers which Wox windows the macOS permission guide hid so
 	// they can be restored when System Settings is closed.
 	permissionFlow *macOSPermissionFlowHost
@@ -666,7 +670,10 @@ func (a *App) start() error {
 		// macOS floating level and Linux layer-shell TOP already do that without
 		// occupying the overlay band, so timer/tooltip HUDs can sit above Wox.
 		Topmost: launcherQueryWindowTopmost(runtime.GOOS),
-		OnFrame: host.Frame,
+		// NoActivateOnShow previews (Space Quick Look) show passively so the
+		// foreground app keeps receiving keystrokes; clicks still activate.
+		NoActivateOnShow: a.noActivateOnShow,
+		OnFrame:          host.Frame,
 		OnPointer: func(event woxui.PointerEvent) {
 			if event.Kind == woxui.PointerDown {
 				a.resultDrag.releaseResultFileDragHold()
@@ -997,6 +1004,14 @@ func (a *App) hasCacheableWebViewPreviewLocked() bool {
 		return false
 	}
 	return data.HTML != "" || !data.CacheDisabled
+}
+
+// launcherPreviewOnlySpaceClose reports whether a key event should close a
+// preview-only window (Space Quick Look style) instead of reaching the query
+// editor, which would otherwise swallow Space as text input.
+func launcherPreviewOnlySpaceClose(show showAppParams, event woxui.KeyEvent) bool {
+	return show.ShowPreviewTitleBar && show.HideQueryBox && show.HideToolbar &&
+		event.Down && !event.Repeat && event.Modifiers == 0 && event.Key == woxui.KeySpace
 }
 
 // closePreviewWindow dismisses only the launcher instance that owns the preview.
@@ -1811,6 +1826,13 @@ func (a *App) onKey(event woxui.KeyEvent) bool {
 	}
 	if !a.formTables.formTableUsesSettingsWindow() && a.formTables.launcherEditor != nil {
 		return a.formTables.onFormTableKey(event)
+	}
+	// Preview-only secondaries such as the Space Quick Look panel close on a
+	// bare Space press, mirroring macOS Quick Look. This must run before the
+	// query editor path below consumes Space as text input.
+	if launcherPreviewOnlySpaceClose(a.show, event) {
+		a.closePreviewWindow()
+		return true
 	}
 	// Handle the hold state before feature-local handlers can consume the key.
 	if a.quickSelect.onQuickSelectKey(event) {

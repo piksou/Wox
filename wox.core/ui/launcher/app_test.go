@@ -428,6 +428,26 @@ func TestLauncherReservesFullPreviewHeightBeforeResultsArrive(t *testing.T) {
 	}
 }
 
+func TestLauncherPreviewOnlySpaceClose(t *testing.T) {
+	previewOnly := showAppParams{HideQueryBox: true, HideToolbar: true, ShowPreviewTitleBar: true}
+	space := woxui.KeyEvent{Key: woxui.KeySpace, Down: true}
+	if !launcherPreviewOnlySpaceClose(previewOnly, space) {
+		t.Fatal("bare Space in a preview-only window should close the preview")
+	}
+	if launcherPreviewOnlySpaceClose(showAppParams{}, space) {
+		t.Fatal("the main launcher query box must keep Space as text input")
+	}
+	if launcherPreviewOnlySpaceClose(previewOnly, woxui.KeyEvent{Key: woxui.KeySpace, Down: true, Modifiers: woxui.KeyModifierControl}) {
+		t.Fatal("modified Space must not close the preview")
+	}
+	if launcherPreviewOnlySpaceClose(previewOnly, woxui.KeyEvent{Key: woxui.KeySpace, Down: true, Repeat: true}) {
+		t.Fatal("auto-repeated Space must not re-trigger the close")
+	}
+	if launcherPreviewOnlySpaceClose(previewOnly, woxui.KeyEvent{Key: woxui.KeyEscape, Down: true}) {
+		t.Fatal("only Space owns the preview close shortcut here")
+	}
+}
+
 func TestSecondaryLauncherHideClosesWithoutWebViewCache(t *testing.T) {
 	app := bindTestApp(&App{isPrimary: false})
 	app.destroyOnce.Do(func() {})

@@ -115,6 +115,12 @@ type WindowOptions struct {
 	// Nonactivating keeps tooltips and recording chrome visible without stealing
 	// focus. It is a focus policy only; native window materials still apply.
 	Nonactivating bool
+	// NoActivateOnShow presents the window without activating it, so the current
+	// foreground app keeps keyboard focus. Unlike Nonactivating the window stays
+	// normally activatable: clicking it later focuses it as usual. Used by
+	// hover-style surfaces such as Space Quick Look that must not interrupt the
+	// app feeding them keystrokes. Windows only today.
+	NoActivateOnShow bool
 	// Topmost raises a utility window above the launcher so preview overlays
 	// cannot open behind Wox when both share the floating window band.
 	Topmost                    bool

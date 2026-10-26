@@ -2311,7 +2311,11 @@ func (w *platformWindow) showNative() (FocusEpoch, error) {
 		// composition surface from becoming visible one refresh before its content.
 		_, _, _ = dwmFlush.Call()
 	}
-	if w.options.Nonactivating {
+	// NoActivateOnShow windows preview without activation (Space Quick Look peeks
+	// over Explorer), so they share the passive show path with Nonactivating
+	// overlays while keeping normal click activation and webview surfaces.
+	passiveShow := w.options.Nonactivating || w.options.NoActivateOnShow
+	if passiveShow {
 		win.ShowWindow(w.hwnd, win.SW_SHOWNOACTIVATE)
 	} else {
 		win.ShowWindow(w.hwnd, showCommand)
@@ -2320,11 +2324,11 @@ func (w *platformWindow) showNative() (FocusEpoch, error) {
 		}
 	}
 	if w.options.Topmost || w.options.Role == WindowRoleScreenshot {
-		win.SetWindowPos(w.hwnd, windowsHWNDTopmost, 0, 0, 0, 0, windowsTopmostShowFlags(w.options.Nonactivating))
+		win.SetWindowPos(w.hwnd, windowsHWNDTopmost, 0, 0, 0, 0, windowsTopmostShowFlags(passiveShow))
 	}
 	if w.isWithinFocusDomain(win.GetForegroundWindow()) {
 		w.confirmActivation()
-	} else if !w.options.Nonactivating {
+	} else if !passiveShow {
 		// Re-Show of an already visible launcher after Settings close often skips
 		// WM_ACTIVATE, and GetForegroundWindow can still name the dying HWND.
 		w.scheduleActivationConfirm()
@@ -2508,12 +2512,12 @@ func (w *platformWindow) setTopmostNative(enabled bool) error {
 	return nil
 }
 
-// windowsTopmostShowFlags raises a just-shown topmost window. Nonactivating
-// overlays keep SWP_NOACTIVATE so tooltips cannot steal launcher focus and
-// trigger hide-on-lost-focus.
-func windowsTopmostShowFlags(nonactivating bool) uint32 {
+// windowsTopmostShowFlags raises a just-shown topmost window. Passive windows
+// (Nonactivating overlays and NoActivateOnShow previews) keep SWP_NOACTIVATE
+// so they cannot steal launcher or foreground-app focus.
+func windowsTopmostShowFlags(passiveShow bool) uint32 {
 	flags := uint32(win.SWP_NOMOVE | win.SWP_NOSIZE)
-	if nonactivating {
+	if passiveShow {
 		flags |= win.SWP_NOACTIVATE
 	}
 	return flags
