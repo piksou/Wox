@@ -464,26 +464,31 @@ func launcherResultRow(props launcherResultRowProps) woxwidget.Widget {
 		Child: woxwidget.Flex{Axis: woxwidget.Horizontal, Gap: props.IconGap, Children: rowChildren},
 	}
 	onPointer, onHover := hoverEnterOnPointerMove(item.OnHover)
+	// Single click activates immediately (select + open). The double-tap
+	// handler must stay registered as a no-op: without it the host would
+	// deliver the second click of a double click to onTap again and run the
+	// result twice.
+	onTap := func() {
+		if item.OnSelect != nil {
+			item.OnSelect()
+		}
+		if item.OnActivate != nil {
+			item.OnActivate()
+		}
+	}
 	resultControl := woxwidget.Gesture{
 		ID:        fmt.Sprintf("result-gesture-%s", item.ID),
 		OnPointer: onPointer,
 		OnHover:   onHover,
-		OnTap:     item.OnSelect,
+		OnTap:     onTap,
 		OnSecondaryTapDown: func(woxui.Point) {
 			if item.OnSecondaryTapDown != nil {
 				item.OnSecondaryTapDown()
 			}
 		},
 		OnDragStart: item.OnDragStart,
-		OnDoubleTap: func() {
-			if item.OnSelect != nil {
-				item.OnSelect()
-			}
-			if item.OnActivate != nil {
-				item.OnActivate()
-			}
-		},
-		Child: woxwidget.Stack{Width: props.RowWidth, Height: props.RowHeight, Children: []woxwidget.StackChild{{Child: backgroundLayer}, {Child: contentLayer}}},
+		OnDoubleTap: func() {},
+		Child:       woxwidget.Stack{Width: props.RowWidth, Height: props.RowHeight, Children: []woxwidget.StackChild{{Child: backgroundLayer}, {Child: contentLayer}}},
 	}
 	return woxwidget.Semantics{
 		Key: woxwidget.Key(fmt.Sprintf("launcher-result-key-%s", item.ID)), AutomationID: "launcher.result." + item.ID, Role: woxui.AccessibilityRoleListItem,
@@ -563,18 +568,18 @@ func launcherResultTitleTagHover(item LauncherResultItem, tag LauncherResultTitl
 		Child: woxwidget.Gesture{
 			ID: id, OnPointer: onPointer, OnHover: onHover, OnHoverAt: func(inside bool, bounds woxui.Rect) {
 				item.OnTooltip(inside, tooltip, bounds)
-			}, OnTap: item.OnSelect, OnSecondaryTapDown: func(woxui.Point) {
-				if item.OnSecondaryTapDown != nil {
-					item.OnSecondaryTapDown()
-				}
-			}, OnDragStart: item.OnDragStart, OnDoubleTap: func() {
+			}, OnTap: func() {
 				if item.OnSelect != nil {
 					item.OnSelect()
 				}
 				if item.OnActivate != nil {
 					item.OnActivate()
 				}
-			}, Child: content,
+			}, OnSecondaryTapDown: func(woxui.Point) {
+				if item.OnSecondaryTapDown != nil {
+					item.OnSecondaryTapDown()
+				}
+			}, OnDragStart: item.OnDragStart, OnDoubleTap: func() {}, Child: content,
 		},
 	}
 }
@@ -654,18 +659,18 @@ func launcherResultTailHover(props launcherResultTailsProps, index int, tooltip 
 		Child: woxwidget.Gesture{
 			ID: id, OnPointer: onPointer, OnHover: onHover, OnHoverAt: func(inside bool, bounds woxui.Rect) {
 				props.OnTooltip(inside, tooltip, bounds)
-			}, OnTap: props.OnSelect, OnSecondaryTapDown: func(woxui.Point) {
-				if props.OnSecondaryTapDown != nil {
-					props.OnSecondaryTapDown()
-				}
-			}, OnDragStart: props.OnDragStart, OnDoubleTap: func() {
+			}, OnTap: func() {
 				if props.OnSelect != nil {
 					props.OnSelect()
 				}
 				if props.OnActivate != nil {
 					props.OnActivate()
 				}
-			}, Child: content,
+			}, OnSecondaryTapDown: func(woxui.Point) {
+				if props.OnSecondaryTapDown != nil {
+					props.OnSecondaryTapDown()
+				}
+			}, OnDragStart: props.OnDragStart, OnDoubleTap: func() {}, Child: content,
 		},
 	}
 }

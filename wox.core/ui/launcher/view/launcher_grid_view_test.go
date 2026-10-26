@@ -59,6 +59,27 @@ func TestLauncherGridResultWiresSecondaryTap(t *testing.T) {
 	}
 }
 
+// TestLauncherGridResultSingleTapSelectsAndActivates keeps click-to-open as the
+// primary grid gesture, and the empty double-tap handler must swallow the
+// second click of a double click.
+func TestLauncherGridResultSingleTapSelectsAndActivates(t *testing.T) {
+	selected, activated := 0, 0
+	result := launcherGridResultView(LauncherGridResult{
+		ID: "wallpaper", OnSelect: func() { selected++ }, OnActivate: func() { activated++ },
+	}, LauncherGridProps{
+		CellWidth: 120, CellHeight: 110, VisualWidth: 100, VisualHeight: 70,
+	}).(woxwidget.Semantics).Child.(woxwidget.Gesture)
+
+	result.OnTap()
+	if selected != 1 || activated != 1 {
+		t.Fatalf("single tap: selected=%d activated=%d, want 1/1", selected, activated)
+	}
+	result.OnDoubleTap()
+	if selected != 1 || activated != 1 {
+		t.Fatalf("double tap: selected=%d activated=%d, want the first tap only", selected, activated)
+	}
+}
+
 func TestLauncherGridImageUsesFlutterFit(t *testing.T) {
 	icon, err := woxui.NewImage(image.NewRGBA(image.Rect(0, 0, 200, 100)))
 	if err != nil {

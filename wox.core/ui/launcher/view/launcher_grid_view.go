@@ -223,6 +223,16 @@ func launcherGridResultView(result LauncherGridResult, props LauncherGridProps) 
 		})
 	}
 	onPointer, onHover := hoverEnterOnPointerMove(result.OnHover)
+	// Single click activates immediately (select + open); the no-op double-tap
+	// handler swallows the second click so a double click cannot run twice.
+	onTap := func() {
+		if result.OnSelect != nil {
+			result.OnSelect()
+		}
+		if result.OnActivate != nil {
+			result.OnActivate()
+		}
+	}
 	return woxwidget.Semantics{
 		Key: woxwidget.Key(fmt.Sprintf("launcher-result-key-%s", result.ID)), AutomationID: "launcher.result." + result.ID, Role: woxui.AccessibilityRoleListItem,
 		Label: result.Title, Value: result.QuickSelectNumber, Selected: result.Selected, Hovered: result.Hovered,
@@ -242,21 +252,14 @@ func launcherGridResultView(result LauncherGridResult, props LauncherGridProps) 
 			ID:        fmt.Sprintf("grid-result-%s", result.ID),
 			OnPointer: onPointer,
 			OnHover:   onHover,
-			OnTap:     result.OnSelect,
+			OnTap:     onTap,
 			OnSecondaryTapDown: func(woxui.Point) {
 				if result.OnSecondaryTapDown != nil {
 					result.OnSecondaryTapDown()
 				}
 			},
 			OnDragStart: result.OnDragStart,
-			OnDoubleTap: func() {
-				if result.OnSelect != nil {
-					result.OnSelect()
-				}
-				if result.OnActivate != nil {
-					result.OnActivate()
-				}
-			},
+			OnDoubleTap: func() {},
 			Child: woxwidget.Container{
 				Width: props.CellWidth, Height: props.CellHeight, Padding: woxwidget.UniformInsets(props.ItemMargin),
 				Child: woxwidget.Flex{Axis: woxwidget.Vertical, Children: children},

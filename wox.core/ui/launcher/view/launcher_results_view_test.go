@@ -142,6 +142,88 @@ func TestLauncherResultExposesHoveredSemantics(t *testing.T) {
 	}
 }
 
+// tapLauncherAutomationNode taps the left edge of an automation node, staying
+// clear of nested trailing hotspots such as preview buttons and tails.
+func tapLauncherAutomationNode(t *testing.T, host *woxwidget.Host, automationID string) {
+	t.Helper()
+	var target woxui.AccessibilityNode
+	for _, node := range host.Snapshot().Tree.Nodes {
+		if node.AutomationID == automationID {
+			target = node
+			break
+		}
+	}
+	if target.AutomationID == "" || target.Bounds.Width <= 0 {
+		t.Fatalf("automation node %q was missing from the host snapshot", automationID)
+	}
+	point := woxui.Point{X: target.Bounds.X + 10, Y: target.Bounds.Y + target.Bounds.Height/2}
+	host.Pointer(woxui.PointerEvent{Kind: woxui.PointerMove, Position: point})
+	host.Pointer(woxui.PointerEvent{Kind: woxui.PointerDown, Position: point, Button: woxui.PointerButtonPrimary})
+	host.Pointer(woxui.PointerEvent{Kind: woxui.PointerUp, Position: point, Button: woxui.PointerButtonPrimary})
+}
+
+func newLauncherSingleClickResultHost(t *testing.T, item LauncherResultItem) *woxwidget.Host {
+	t.Helper()
+	host := woxwidget.NewHost(func(woxui.FrameInfo) woxwidget.Widget {
+		return LauncherResultsView(LauncherResultsProps{
+			Width: 320, Height: 50, ContentHeight: 50, RowHeight: 50,
+			Items: []LauncherResultItem{item},
+		})
+	})
+	host.AttachServices(actionSearchHostServices{})
+	host.Frame(&woxui.DisplayList{}, woxui.FrameInfo{Size: woxui.Size{Width: 320, Height: 50}, PixelSize: woxui.PixelSize{Width: 320, Height: 50}, Scale: 1})
+	return host
+}
+
+// TestLauncherResultSingleTapSelectsAndActivates keeps click-to-open as the
+// primary row gesture: one tap selects and runs the result immediately.
+func TestLauncherResultSingleTapSelectsAndActivates(t *testing.T) {
+	selected, activated := 0, 0
+	host := newLauncherSingleClickResultHost(t, LauncherResultItem{
+		ID: "app", Title: "Wox",
+		OnSelect:   func() { selected++ },
+		OnActivate: func() { activated++ },
+	})
+	tapLauncherAutomationNode(t, host, "launcher.result.app")
+	if selected != 1 || activated != 1 {
+		t.Fatalf("single tap: selected=%d activated=%d, want 1/1", selected, activated)
+	}
+}
+
+// TestLauncherResultDoubleTapActivatesOnce guards the empty double-tap handler:
+// the host routes the second click of a double click to it, so the result must
+// not run a second time.
+func TestLauncherResultDoubleTapActivatesOnce(t *testing.T) {
+	selected, activated := 0, 0
+	host := newLauncherSingleClickResultHost(t, LauncherResultItem{
+		ID: "app", Title: "Wox",
+		OnSelect:   func() { selected++ },
+		OnActivate: func() { activated++ },
+	})
+	tapLauncherAutomationNode(t, host, "launcher.result.app")
+	tapLauncherAutomationNode(t, host, "launcher.result.app")
+	if selected != 1 || activated != 1 {
+		t.Fatalf("double tap: selected=%d activated=%d, want the first tap only", selected, activated)
+	}
+}
+
+// TestLauncherResultTitleTagTapActivates keeps the nested title chip on the
+// same select-and-activate gesture as the row.
+func TestLauncherResultTitleTagTapActivates(t *testing.T) {
+	selected, activated := 0, 0
+	host := newLauncherSingleClickResultHost(t, LauncherResultItem{
+		ID: "app", Title: "Wox",
+		TitleTags:  []LauncherResultTitleTag{{Text: "sz", Tooltip: "Query alias"}},
+		OnTooltip:  func(bool, string, woxui.Rect) {},
+		OnSelect:   func() { selected++ },
+		OnActivate: func() { activated++ },
+	})
+	tapLauncherAutomationNode(t, host, "result-title-tag-app-sz")
+	if selected != 1 || activated != 1 {
+		t.Fatalf("title tag tap: selected=%d activated=%d, want 1/1", selected, activated)
+	}
+}
+
 func TestLauncherResultWiresSecondaryTap(t *testing.T) {
 	tapped := false
 	result := LauncherResultsView(LauncherResultsProps{
@@ -620,14 +702,16 @@ func TestLauncherResultTailHoverUsesTooltipAndKeepsRowActions(t *testing.T) {
 	var tooltip string
 	var anchor woxui.Rect
 	tapped := false
+	activated := 0
 	result := LauncherResultsView(LauncherResultsProps{
 		Width: 320, Height: 50, ContentHeight: 50, RowHeight: 50,
 		Theme: woxcomponent.Theme{ResultTitle: woxui.Color{A: 255}},
 		Items: []LauncherResultItem{{
 			ID: "perf", Title: "Result", TailWidth: 160, TailHeight: 22,
-			Tails:     []LauncherResultTail{{Text: "B1", Width: 40, Height: 22, Tooltip: "First batch flush tick: 5.0ms"}, {Text: "1ms", Width: 40, Height: 22}},
-			OnSelect:  func() { tapped = true },
-			OnTooltip: func(inside bool, text string, bounds woxui.Rect) { hovered, tooltip, anchor = inside, text, bounds },
+			Tails:      []LauncherResultTail{{Text: "B1", Width: 40, Height: 22, Tooltip: "First batch flush tick: 5.0ms"}, {Text: "1ms", Width: 40, Height: 22}},
+			OnSelect:   func() { tapped = true },
+			OnActivate: func() { activated++ },
+			OnTooltip:  func(inside bool, text string, bounds woxui.Rect) { hovered, tooltip, anchor = inside, text, bounds },
 		}},
 	}).(woxwidget.Semantics)
 	listScroll := result.Child.(woxwidget.Container).Child.(woxwidget.Semantics).Child.(woxwidget.Gesture).Child.(woxwidget.Stack).Children[0].Child.(woxwidget.ScrollView)
@@ -647,6 +731,13 @@ func TestLauncherResultTailHoverUsesTooltipAndKeepsRowActions(t *testing.T) {
 	batch.Child.(woxwidget.Gesture).OnTap()
 	if !tapped {
 		t.Fatal("tooltip tail should still activate the result row")
+	}
+	if activated != 1 {
+		t.Fatalf("tooltip tail tap activated=%d, want the tail hotspot to run the result once", activated)
+	}
+	batch.Child.(woxwidget.Gesture).OnDoubleTap()
+	if activated != 1 {
+		t.Fatalf("tooltip tail double tap activated=%d, want the second click swallowed", activated)
 	}
 	plain := rowFlex.Children[1].(woxwidget.Container).Child.(woxwidget.Align).Child.(woxwidget.Container)
 	if plain.Child == nil {
