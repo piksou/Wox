@@ -4,7 +4,6 @@ on:
   push:
     tags:
       - "v*"
-  workflow_dispatch:
 
 permissions:
   contents: write
@@ -15,15 +14,19 @@ permissions:
 
 jobs:
   build:
+    # Fork release: no SignPath or Apple notarization credentials exist in this repo,
+    # so both signing gates stay off and only the platforms this fork uses are built.
+    # Toggling platform flags here is safe: the release job derives checksums from
+    # whatever artifacts were actually produced.
     uses: ./.github/workflows/build-core.yml
     with:
       run_tests: true
-      build_macos_arm64: true
-      build_macos_amd64: true
+      build_macos_arm64: false
+      build_macos_amd64: false
       build_windows_amd64: true
-      build_linux_amd64: true
-      require_macos_notarize: true
-      require_windows_signpath: true
+      build_linux_amd64: false
+      require_macos_notarize: false
+      require_windows_signpath: false
       artifact_retention_days: 10
     secrets: inherit
 
@@ -55,51 +58,33 @@ jobs:
         run: |
           # Extract changelog for current version from CHANGELOG.md
           VERSION="${{ steps.version.outputs.VERSION }}"
-          extract_changelog() {
-            local file="$1"
-            awk -v version="$VERSION" '
-              index($0, "## v" version " ") == 1 {
-                in_changelog = 1
-                next
-              }
-              in_changelog && /^## v[0-9]/ {
-                exit
-              }
-              in_changelog && $0 == "---" {
-                exit
-              }
-              in_changelog {
-                print
-              }
-            ' "$file"
-          }
-
-          CHANGELOG=$(extract_changelog CHANGELOG.md)
+          CHANGELOG=$(awk -v version="$VERSION" '
+            index($0, "## v" version " ") == 1 {
+              in_changelog = 1
+              next
+            }
+            in_changelog && /^## v[0-9]/ {
+              exit
+            }
+            in_changelog && $0 == "---" {
+              exit
+            }
+            in_changelog {
+              print
+            }
+          ' CHANGELOG.md)
           echo "CHANGELOG<<EOF" >> $GITHUB_OUTPUT
           echo "$CHANGELOG" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
 
-          CHANGELOG_ZH=""
-          if [ -f CHANGELOG.zh_CN.md ]; then
-            CHANGELOG_ZH=$(extract_changelog CHANGELOG.zh_CN.md)
-          fi
-          echo "CHANGELOG_ZH<<EOF" >> $GITHUB_OUTPUT
-          echo "$CHANGELOG_ZH" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
-
+      # Checksums cover every artifact this run produced, so enabling or disabling
+      # platforms above can never make this step fail on a missing file.
       - name: Compute checksums (MD5)
-        id: checksums
         run: |
           set -euo pipefail
-          MAC_ARM64_MD5="$(md5sum release-files/wox-mac-arm64.dmg | awk '{print $1}')"
-          MAC_AMD64_MD5="$(md5sum release-files/wox-mac-amd64.dmg | awk '{print $1}')"
-          WINDOWS_MD5="$(md5sum release-files/wox-windows-amd64.exe | awk '{print $1}')"
-          LINUX_MD5="$(md5sum release-files/wox-linux-amd64 | awk '{print $1}')"
-
-          echo "MAC_ARM64_MD5=$MAC_ARM64_MD5" >> "$GITHUB_OUTPUT"
-          echo "MAC_AMD64_MD5=$MAC_AMD64_MD5" >> "$GITHUB_OUTPUT"
-          echo "WINDOWS_MD5=$WINDOWS_MD5" >> "$GITHUB_OUTPUT"
-          echo "LINUX_MD5=$LINUX_MD5" >> "$GITHUB_OUTPUT"
+          cd release-files
+          md5sum * > checksums.md5
+          cat checksums.md5
 
       - name: Create Release
         uses: ncipollo/release-action@v1
@@ -111,91 +96,3 @@ jobs:
           draft: false
           prerelease: ${{ contains(steps.version.outputs.VERSION, '-') }}
           token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Checkout master to update updater.json
-        uses: actions/checkout@v6
-        with:
-          ref: master
-          fetch-depth: 0
-          path: repo
-
-      - name: Refresh update-channel manifests in master
-        env:
-          VERSION: ${{ steps.version.outputs.VERSION }}
-          TAG: ${{ github.ref_name }}
-          MAC_ARM64_MD5: ${{ steps.checksums.outputs.MAC_ARM64_MD5 }}
-          MAC_AMD64_MD5: ${{ steps.checksums.outputs.MAC_AMD64_MD5 }}
-          WINDOWS_MD5: ${{ steps.checksums.outputs.WINDOWS_MD5 }}
-          LINUX_MD5: ${{ steps.checksums.outputs.LINUX_MD5 }}
-        run: |
-          set -euo pipefail
-
-          cd repo
-
-          MAC_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/wox-mac-arm64.dmg"
-          MAC_AMD64_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/wox-mac-amd64.dmg"
-          WIN_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/wox-windows-amd64.exe"
-          LINUX_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/wox-linux-amd64"
-
-          cat > release-notes.txt <<'EOF'
-          ${{ steps.changelog.outputs.CHANGELOG }}
-          EOF
-          cat > release-notes.zh_CN.txt <<'EOF'
-          ${{ steps.changelog.outputs.CHANGELOG_ZH }}
-          EOF
-
-          if [[ "$VERSION" == *-* ]]; then
-            manifests=(updater.beta.json)
-          else
-            manifests=(updater.json updater.beta.json)
-          fi
-
-          for manifest in "${manifests[@]}"; do
-            if [ ! -f "$manifest" ]; then
-              cp updater.json "$manifest"
-            fi
-
-            tmp="$(mktemp)"
-            jq_args=(
-              --arg version "$VERSION"
-              --arg macUrl "$MAC_URL"
-              --arg macMd5 "$MAC_ARM64_MD5"
-              --arg macAmd64Url "$MAC_AMD64_URL"
-              --arg macAmd64Md5 "$MAC_AMD64_MD5"
-              --arg winUrl "$WIN_URL"
-              --arg winMd5 "$WINDOWS_MD5"
-              --arg linuxUrl "$LINUX_URL"
-              --arg linuxMd5 "$LINUX_MD5"
-              --rawfile notes release-notes.txt
-            )
-            jq_filter='.Version = $version
-              | .MacArm64DownloadUrl = $macUrl
-              | .MacArm64Checksum = $macMd5
-              | .MacAmd64DownloadUrl = $macAmd64Url
-              | .MacAmd64Checksum = $macAmd64Md5
-              | .WindowsDownloadUrl = $winUrl
-              | .WindowsChecksum = $winMd5
-              | .LinuxDownloadUrl = $linuxUrl
-              | .LinuxChecksum = $linuxMd5
-              | .ReleaseNotes = ($notes | rtrimstr("\n"))
-              | del(."ReleaseNotes.zh_CN")'
-
-            if [ -s release-notes.zh_CN.txt ] && [ -n "$(tr -d '[:space:]' < release-notes.zh_CN.txt)" ]; then
-              jq_args+=(--rawfile notesZh release-notes.zh_CN.txt)
-              jq_filter+=' | ."ReleaseNotes.zh_CN" = ($notesZh | rtrimstr("\n"))'
-            fi
-
-            jq "${jq_args[@]}" "$jq_filter" "$manifest" > "$tmp"
-            mv "$tmp" "$manifest"
-          done
-
-          if git diff --quiet -- updater.json updater.beta.json; then
-            echo "update-channel manifests unchanged; skipping commit."
-            exit 0
-          fi
-
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add updater.json updater.beta.json
-          git commit -m "chore: update release manifests for ${TAG}"
-          git push origin master

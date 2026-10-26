@@ -33,12 +33,18 @@
   - `wox.core/ui/runtime/internal/window/window_windows.go`（passive show 路径）
   - `ci/pluginhealth/pluginhealth.go`（`CloseWoxInstance` 空实现桩）
 
-## 3. CI：只编译 my-feature 分支且只编译 Windows
+## 3. CI：只编译 my-feature 分支且只编译 Windows（build + release）
 
 - `.github/workflows/build.yml`：push 触发分支改为 `my-feature`（另保留 `workflow_dispatch`）；仅启用 `build_windows_amd64`；关闭 macOS 公证与 Windows SignPath 签名（fork 无对应 secrets）。`build-core.yml` 未改动。
-- 注意：上游若重构 `build.yml` / `build-core.yml`，此文件几乎必然冲突，合并时保留本 fork 版本或重新套用三点改动即可。
+- `.github/workflows/release.yml`：仅 tag（`v*`）触发；同样只构建 Windows、关闭签名/公证；checksums 按实际产物动态生成并附 `checksums.md5`；删除上游“向 master 推 updater.json/updater.beta.json”的步骤（本 fork 的 manifest 无人消费，且避免污染跟踪上游的 master 分支）。发布方式：`git tag v<版本> && git push origin v<版本>`。
+- 注意：上游若重构 `build.yml` / `build-core.yml` / `release.yml`，这些文件几乎必然冲突，合并时保留本 fork 版本或重新套用上述改动即可。
 
-## 4. 自动更新默认关闭
+## 4. 自动更新：仅检测并一次性提示，禁用实质更新动作
 
-- `wox.core/setting/wox_setting.go`：`EnableAutoUpdate` 默认值 `true` → `false`，避免自构建版本自动更新到上游 master 发布通道。
-- 注意：仅影响新装/未显式保存过该设置的环境；已有配置中保存过 `true` 的仍需在设置中手动关闭。
+- 行为（`wox.core/updater/updater.go`）：
+  - 更新检查始终执行（移除 `EnableAutoUpdate` 门控；本 fork 的检查无副作用，只为驱动提示）。
+  - 发现上游新版本时不再自动下载：改为通过 `util/notifier` 提示一次“上游 Wox 发布了新版本，请自行合并上游更改并重新编译”。每个上游版本只提示一次，已提示的版本号记录在 Wox 数据目录 `updates/upstream_notified_version.txt`。
+  - `ApplyUpdate` 顶部直接返回错误；`downloadUpdate` 与各平台更新实现保留但已无调用路径。自构建版本绝不自动下载/替换为官方安装包。
+- 版本号纪律：`wox.core/updater/version.go` 的 `CURRENT_VERSION` 必须与所基于的上游 release 版本完全一致（当前 `2.4.8`），不得加 `-fork` 之类的后缀，否则 semver 比较无法正确检测官方新版本。同步上游时更新该常量，release tag 也使用同一版本号（如 `v2.4.8`）。
+- `wox.core/setting/wox_setting.go`：`EnableAutoUpdate` 默认值 `true` → `false`（该设置现在只影响 update 插件 UI 展示，不再门控更新检查）。
+- 合并上游注意：`updater.go` 的三处 fork 改动（门控移除、`downloadUpdate` 调用替换为 `notifyUpstreamReleaseOnce`、`ApplyUpdate` 守卫）需保留。

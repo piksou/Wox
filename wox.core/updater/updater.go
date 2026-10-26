@@ -16,6 +16,7 @@ import (
 	"wox/setting"
 
 	"wox/util"
+	"wox/util/notifier"
 
 	"github.com/Masterminds/semver/v3"
 )
@@ -261,20 +262,9 @@ func CheckForUpdatesWithCallback(ctx context.Context, callback UpdateInfoCallbac
 	}
 	resetCurrentUpdateInfoForReleaseChannel(releaseChannel)
 
-	if woxSetting != nil && !woxSetting.EnableAutoUpdate.Get() {
-		util.GetLogger().Info(ctx, "auto update is disabled, skipping")
-		currentUpdateInfo = UpdateInfo{
-			CurrentVersion: CURRENT_VERSION,
-			ReleaseChannel: string(setting.NormalizeReleaseChannel(string(releaseChannel))),
-			Status:         UpdateStatusNone,
-			HasUpdate:      false,
-		}
-		if callback != nil {
-			callback(currentUpdateInfo)
-		}
-		return
-	}
-
+	// Fork customization: the check always runs regardless of EnableAutoUpdate.
+	// Nothing is ever downloaded in this fork, so checking is side-effect free and
+	// only drives the one-time upstream-release prompt below.
 	if currentUpdateInfo.Status == UpdateStatusDownloading {
 		util.GetLogger().Info(ctx, "update is downloading, skipping")
 		if callback != nil {
@@ -300,7 +290,10 @@ func CheckForUpdatesWithCallback(ctx context.Context, callback UpdateInfoCallbac
 		return
 	}
 
-	downloadUpdate(ctx, callback)
+	// Fork customization: this fork is self-built and never downloads or installs
+	// upstream releases automatically. Prompt once per version so the user can
+	// merge upstream changes and rebuild manually (see MY_CUSTOMIZATION.md).
+	notifyUpstreamReleaseOnce(ctx, currentUpdateInfo.LatestVersion)
 }
 
 func resetCurrentUpdateInfoForReleaseChannel(releaseChannel setting.ReleaseChannel) {
@@ -493,6 +486,37 @@ func GetUpdateInfo() UpdateInfo {
 	return currentUpdateInfo
 }
 
+// upstreamNotifiedVersionFile stores the last upstream release version this fork
+// already prompted about, so each upstream release notifies exactly once.
+func upstreamNotifiedVersionFile() string {
+	return filepath.Join(util.GetLocation().GetUpdatesDirectory(), "upstream_notified_version.txt")
+}
+
+// notifyUpstreamReleaseOnce replaces the automatic download in this fork: it only
+// reminds the user to merge upstream changes and rebuild. CURRENT_VERSION must stay
+// aligned with upstream (see wox.core/updater/version.go) so future official
+// releases are still detected by the semver comparison.
+func notifyUpstreamReleaseOnce(ctx context.Context, latestVersion string) {
+	if latestVersion == "" {
+		return
+	}
+
+	file := upstreamNotifiedVersionFile()
+	if notified, err := os.ReadFile(file); err == nil && string(notified) == latestVersion {
+		return
+	}
+
+	notifier.Notify(nil, fmt.Sprintf("上游 Wox 发布了新版本 v%s。本分支为自构建版本，不会自动更新：请合并上游更改并重新编译，并保持 CURRENT_VERSION 与上游版本一致。", latestVersion))
+
+	if err := os.MkdirAll(filepath.Dir(file), 0755); err != nil {
+		util.GetLogger().Warn(ctx, fmt.Sprintf("failed to create updates directory for upstream version marker: %v", err))
+		return
+	}
+	if err := os.WriteFile(file, []byte(latestVersion), 0644); err != nil {
+		util.GetLogger().Warn(ctx, fmt.Sprintf("failed to record notified upstream version: %v", err))
+	}
+}
+
 func downloadUpdate(ctx context.Context, callback UpdateInfoCallback) {
 	if currentUpdateInfo.DownloadUrl == "" {
 		util.GetLogger().Error(ctx, "no download URL provided")
@@ -586,6 +610,11 @@ func downloadUpdate(ctx context.Context, callback UpdateInfoCallback) {
 // ApplyUpdate applies the downloaded update
 // This should be called when the user confirms they want to update
 func ApplyUpdate(ctx context.Context, progress ApplyUpdateProgressCallback) error {
+	// Fork customization: self-built binaries never replace themselves with an
+	// upstream release; the user merges upstream and rebuilds instead
+	// (see MY_CUSTOMIZATION.md). The code below is unreachable on purpose.
+	return errors.New("update is disabled in this custom build; merge upstream and rebuild instead")
+
 	util.GetLogger().Info(ctx, "start applying update")
 
 	if currentUpdateInfo.Status != UpdateStatusReady || currentUpdateInfo.DownloadedPath == "" {
